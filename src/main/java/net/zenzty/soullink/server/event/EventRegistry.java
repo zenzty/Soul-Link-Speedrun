@@ -146,10 +146,12 @@ public class EventRegistry {
                         }
 
                         // If the player logged back into the Vanilla Overworld but a run is active,
-                        // this means the server safely dropped them here during reboot. We need to 
+                        // this means the server safely dropped them here during reboot. We need to
                         // pull them back into the Fantasy Dimension!
                         if (!runManager.isTemporaryWorld(playerWorld.dimension())) {
-                            SoulLink.LOGGER.info("Reconnecting player detected: {} - teleporting back to run", player.getName().getString());
+                            SoulLink.LOGGER.info(
+                                    "Reconnecting player detected: {} - teleporting back to run",
+                                    player.getName().getString());
                             runManager.teleportPlayerToRun(player);
                         }
                         break;
