@@ -103,13 +103,10 @@ public class EventRegistry {
      * Registers player connection events for player connections and disconnects.
      */
     private static void registerConnectionEvents() {
-        // Player joins - show welcome or handle late join
+        // Player joins - show welcome or handle late join / reconnection
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayer player = handler.getPlayer();
 
-            // Check if RunManager is initialized (might not be if server just started)
-            // But usually SERVER_STARTED runs before player join.
-            // However, use try-catch or check to be safe if getInstance throws.
             RunManager runManager;
             try {
                 runManager = RunManager.getInstance();
@@ -121,7 +118,7 @@ public class EventRegistry {
                 return;
             }
 
-            // IMMEDIATELY teleport if IDLE to prevent suffocation damage
+            // IMMEDIATELY teleport if IDLE to prevent suffocation damage in vanilla spawn
             if (runManager.getGameState() == RunState.IDLE) {
                 runManager.teleportToVanillaSpawn(player);
             }
@@ -142,16 +139,17 @@ public class EventRegistry {
 
                     case GENERATING_WORLD:
                     case RUNNING:
-                        // Run in progress - teleport player to it
+                        // --- UPDATED RECONNECTION LOGIC ---
                         ServerLevel playerWorld = player.level();
                         if (playerWorld == null) {
                             return;
                         }
 
+                        // If the player logged back into the Vanilla Overworld but a run is active,
+                        // this means the server safely dropped them here during reboot. We need to 
+                        // pull them back into the Fantasy Dimension!
                         if (!runManager.isTemporaryWorld(playerWorld.dimension())) {
-                            SoulLink.LOGGER.info(
-                                    "Late joiner detected: {} - teleporting to run",
-                                    player.getName().getString());
+                            SoulLink.LOGGER.info("Reconnecting player detected: {} - teleporting back to run", player.getName().getString());
                             runManager.teleportPlayerToRun(player);
                         }
                         break;
@@ -359,9 +357,6 @@ public class EventRegistry {
             }
 
             // Allow all damage through - the actual death check happens in ServerPlayerEntityMixin
-            // when health truly hits 0 (after armor/enchantment reductions are applied).
-            // Previously we checked raw damage here, but that caused false positives since
-            // 'amount' is before armor reduction (e.g., iron golem 15 raw → 7 actual with armor).
             return true;
         });
 
@@ -433,13 +428,7 @@ public class EventRegistry {
     }
 
     /**
-     * Handles Hunter death in Manhunt: broadcast, clear bad effects, switch to spectator, drop
-     * non-compass items, 5s countdown, then respawn at run spawn with full stats and a new tracking
-     * compass.
-     *
-     * @param player the hunter who died
-     * @param source the damage source
-     * @param runManager the run manager (used for spawn, run state, and overworld)
+     * Handles Hunter death in Manhunt
      */
     public static void handleHunterDeath(ServerPlayer player, DamageSource source, RunManager runManager) {
         MinecraftServer server = runManager.getServer();
@@ -546,8 +535,7 @@ public class EventRegistry {
     }
 
     /**
-     * Clears all pending delayed tasks. Called when starting a new run so that tasks from a
-     * previous run (e.g. hunter respawn countdown) do not carry over.
+     * Clears all pending delayed tasks.
      */
     public static void clearDelayedTasks() {
         DELAYED_TASKS.clear();

@@ -100,6 +100,24 @@ public class RunManager {
             return;
         }
         instance = new RunManager(server);
+
+        RunSavedData savedState = RunSavedData.get(server);
+        if (savedState.activeRunId != null && savedState.gameState.equals(RunState.RUNNING.name())) {
+            SoulLink.LOGGER.info("Recovering active run from crash/restart!");
+            
+            // Re-open the persistent fantasy dimensions
+            instance.worldService.restoreRun(savedState.activeRunId, savedState.seed); 
+            
+            instance.gameState = RunState.RUNNING;
+            
+            // NEW: Inject the saved spawn position so teleport logic works!
+            BlockPos recoveredSpawn = new BlockPos(savedState.spawnX, savedState.spawnY, savedState.spawnZ);
+            instance.spawnFinder.injectSpawnPos(recoveredSpawn);
+            
+            // Restore the time AND resume the timer!
+            instance.timerService.setElapsedTimeMillis(savedState.elapsedTimeMillis); 
+            instance.timerService.setRunning(true); 
+        }
     }
 
     public static RunManager getInstance() {
@@ -116,7 +134,14 @@ public class RunManager {
             CompassTrackingHandler.reset();
             currentInstance.poolManager.cleanup();
             currentInstance.worldService.deleteOldWorlds();
-            currentInstance.deleteWorlds(true);
+            
+            // ---> THE FIX IS HERE <---
+            // We only delete the active worlds if the game is OVER or IDLE.
+            // If the game is RUNNING, we leave the worlds alone so they survive the restart!
+            if (currentInstance.gameState != RunState.RUNNING) {
+                currentInstance.deleteWorlds(true);
+            }
+            
             instance = null;
         }
     }
@@ -168,6 +193,11 @@ public class RunManager {
 
             SoulLink.LOGGER.info("Storage full! Start");
             transitionToRunning();
+            RunSavedData data = RunSavedData.get(server);
+            data.activeRunId = nextRun.runId();
+            data.seed = nextRun.seed();
+            data.gameState = RunState.RUNNING.name();
+            data.setDirty(); // Tells Minecraft to save this to disk
         } else {
             // STORAGE EMPTY -> (WAIT FOR POOL MANAGER)
             server.getPlayerList().broadcastSystemMessage(formatMessage("Generating world..."), true);
@@ -201,6 +231,11 @@ public class RunManager {
         }
 
         timerService.tick(server, this::isInRun, this::shouldSkipTimerActionBarFor);
+        if (server.getTickCount() % 20 == 0 && gameState == RunState.RUNNING) {
+            RunSavedData data = RunSavedData.get(server);
+            data.elapsedTimeMillis = timerService.getElapsedTimeMillis();
+            data.setDirty();
+        }
     }
 
     private boolean shouldSkipTimerActionBarFor(ServerPlayer p) {
@@ -262,6 +297,19 @@ public class RunManager {
 
         server.getPlayerList().broadcastSystemMessage(formatMessage("World ready! Good luck!"), false);
         SoulLink.LOGGER.info("World generation complete, run started");
+
+        RunSavedData data = RunSavedData.get(server);
+        data.activeRunId = worldService.getCurrentRunId(); // <-- THIS WAS MISSING
+        data.seed = worldService.getCurrentSeed();
+        data.gameState = RunState.RUNNING.name();
+        data.elapsedTimeMillis = 0; 
+        
+        // Add these three lines:
+        if (spawnPos != null) {
+            data.spawnX = spawnPos.getX();
+            data.spawnY = spawnPos.getY();
+            data.spawnZ = spawnPos.getZ();
+        }
     }
 
     private static final int HEAD_START_SECONDS = 30;
@@ -421,6 +469,12 @@ public class RunManager {
                 .append(Component.literal(" to start a new attempt.").withStyle(ChatFormatting.GRAY));
 
         server.getPlayerList().broadcastSystemMessage(restartMessage, false);
+        
+        RunSavedData data = RunSavedData.get(server);
+        data.activeRunId = null;
+        data.gameState = RunState.GAMEOVER.name();
+        data.elapsedTimeMillis = 0;
+        data.setDirty();
     }
 
     public synchronized void triggerVictory() {
