@@ -43,10 +43,12 @@ public class WorldService {
 
         // Overworld
         ServerLevel vanillaOverworld = server.overworld();
-        RuntimeLevelConfig overworldConfig =
-                new RuntimeLevelConfig().setDimensionType(BuiltinDimensionTypes.OVERWORLD)
-                        .setDifficulty(serverDifficulty).setMirrorOverworldClocks(true)
-                        .setGameRule(GameRules.ADVANCE_TIME, true).setSeed(backgroundSeed)
+        RuntimeLevelConfig overworldConfig = new RuntimeLevelConfig()
+                .setDimensionType(BuiltinDimensionTypes.OVERWORLD)
+                .setDifficulty(serverDifficulty)
+                .setMirrorOverworldClocks(true)
+                .setGameRule(GameRules.ADVANCE_TIME, true)
+                .setSeed(backgroundSeed)
                 .setGenerator(vanillaOverworld.getChunkSource().getGenerator());
 
         RuntimeLevelHandle tempOverworld = fantasy.openTemporaryLevel(overworldConfig);
