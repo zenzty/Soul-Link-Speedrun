@@ -1,13 +1,10 @@
 package net.zenzty.soullink.server.run;
 
 import java.util.Random;
-import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Difficulty;
-import net.minecraft.world.clock.ServerClockManager;
-import net.minecraft.world.clock.WorldClock;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
 import net.minecraft.world.level.gamerules.GameRules;
@@ -49,16 +46,12 @@ public class WorldService {
         RuntimeLevelConfig overworldConfig = new RuntimeLevelConfig()
                 .setDimensionType(BuiltinDimensionTypes.OVERWORLD)
                 .setDifficulty(serverDifficulty)
+                .setMirrorOverworldClocks(true)
                 .setGameRule(GameRules.ADVANCE_TIME, true)
                 .setSeed(backgroundSeed)
                 .setGenerator(vanillaOverworld.getChunkSource().getGenerator());
 
         RuntimeLevelHandle tempOverworld = fantasy.openTemporaryLevel(overworldConfig);
-        ServerLevel tempWorld = tempOverworld.asLevel();
-        ServerClockManager clockManager = tempWorld.getServer().clockManager();
-        Holder<WorldClock> clock =
-                tempWorld.dimensionTypeRegistration().value().defaultClock().orElseThrow();
-        clockManager.setTotalTicks(clock, 0L);
 
         // Nether
         ServerLevel vanillaNether = server.getLevel(Level.NETHER);
@@ -98,9 +91,8 @@ public class WorldService {
     }
 
     /**
-     * Clears rain and thunder for a fresh run. In 26.1 weather lives on {@link MinecraftServer}, not on
-     * individual Fantasy worlds, so it survives world swaps unless reset explicitly (unlike time, which
-     * we already reset via {@link ServerClockManager} when pre-warming worlds).
+     * Clears rain and thunder for a fresh run. In 26.1 weather lives on {@link MinecraftServer},
+     * not on individual Fantasy worlds, so it survives world swaps unless reset explicitly.
      */
     public void resetWeatherForNewRun(ServerLevel overworld) {
         if (!overworld.canHaveWeather()) {
@@ -110,6 +102,16 @@ public class WorldService {
         server.setWeatherParameters(-1, ServerLevel.RAIN_DELAY.sample(overworld.getRandom()), false, false);
         overworld.setRainLevel(0.0f);
         overworld.setThunderLevel(0.0f);
+    }
+
+    /**
+     * Resets the shared overworld clock to sunrise (0) for a fresh run, matching a new vanilla
+     * world. Fantasy overworlds mirror this clock, so the active run world resets with it.
+     */
+    public void resetTimeForNewRun() {
+        ServerLevel overworld = server.overworld();
+        var clock = overworld.dimensionTypeRegistration().value().defaultClock().orElseThrow();
+        server.clockManager().setTotalTicks(clock, 0L);
     }
 
     public void saveCurrentWorldsAsOld() {
