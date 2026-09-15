@@ -105,14 +105,13 @@ public class WorldService {
     }
 
     /**
-     * Resets the shared overworld clock to the normal starting time for a fresh run. In 26.1
-     * Fantasy overworlds mirror the server clock, so resetting it also resets the time in the
-     * active Fantasy world.
+     * Resets the shared overworld clock to sunrise (0) for a fresh run, matching a new vanilla
+     * world. Fantasy overworlds mirror this clock, so the active run world resets with it.
      */
     public void resetTimeForNewRun() {
         ServerLevel overworld = server.overworld();
         var clock = overworld.dimensionTypeRegistration().value().defaultClock().orElseThrow();
-        server.clockManager().setTotalTicks(clock, 1000L);
+        server.clockManager().setTotalTicks(clock, 0L);
     }
 
     public void saveCurrentWorldsAsOld() {
