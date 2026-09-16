@@ -75,6 +75,39 @@ public class PlayerTeleportService {
                 1.5f);
     }
 
+    public void teleportPreservingState(ServerPlayer player, ServerLevel world, BlockPos spawnPos) {
+        if (spawnPos == null) {
+            SoulLink.LOGGER.error("Failed to teleport preserving state: null parameter(s)");
+            return;
+        }
+        teleportPreservingState(player, world, spawnPos.getX() + 0.5, spawnPos.getY(), spawnPos.getZ() + 0.5, 0, 0);
+    }
+
+    public void teleportPreservingState(
+            ServerPlayer player, ServerLevel world, double x, double y, double z, float yaw, float pitch) {
+        if (player == null || world == null) {
+            SoulLink.LOGGER.error("Failed to teleport preserving state: null parameter(s)");
+            return;
+        }
+
+        player.teleportTo(world, x, y, z, Set.of(), yaw, pitch, true);
+
+        if (player.connection != null) {
+            player.connection.send(new ClientboundClearTitlesPacket(false));
+        }
+    }
+
+    public void applyRunAttributes(ServerPlayer player, boolean halfHeart) {
+        if (player == null) {
+            return;
+        }
+        var maxHealthAttr = player.getAttribute(Attributes.MAX_HEALTH);
+        if (maxHealthAttr == null) {
+            return;
+        }
+        maxHealthAttr.setBaseValue(halfHeart ? 1.0 : 20.0);
+    }
+
     /**
      * Teleports a player to the vanilla overworld spawn.
      */

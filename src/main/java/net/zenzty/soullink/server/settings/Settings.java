@@ -98,7 +98,7 @@ public class Settings {
      * Whether Manhunt will be enabled for the next run. If the player confirmed changes in /chaos
      * during an active run, those are pending and this returns the pending Manhunt value; otherwise
      * the current setting. Use this when deciding to open the Runner/Hunter selector before
-     * startRun, because applyPendingSettings runs inside startRun.
+     * startRun, because applyPendingSettings runs when the new run actually begins.
      */
     public boolean isManhuntModeForNextRun() {
         return pendingSnapshot != null ? pendingSnapshot.manhuntMode() : manhuntMode;
@@ -156,11 +156,7 @@ public class Settings {
      * deferred until the next run.
      */
     public void applySnapshot(SettingsSnapshot snapshot) {
-        // Check if a run is active
-        RunManager runManager = RunManager.getInstance();
-        boolean runActive = runManager != null
-                && (runManager.getGameState() == RunState.RUNNING
-                        || runManager.getGameState() == RunState.GENERATING_WORLD);
+        boolean runActive = isChaosLocked();
 
         if (runActive) {
             // Already queued this exact snapshot (e.g. re-confirm without changing) – no-op
@@ -213,6 +209,20 @@ public class Settings {
             SoulLink.LOGGER.info("Applying pending settings for new run...");
             applySnapshotInternal(pendingSnapshot);
             pendingSnapshot = null;
+        }
+    }
+
+    public void restorePendingSnapshot(SettingsSnapshot snapshot) {
+        this.pendingSnapshot = snapshot;
+    }
+
+    private static boolean isChaosLocked() {
+        try {
+            RunManager runManager = RunManager.getInstance();
+            RunState state = runManager.getGameState();
+            return state == RunState.RUNNING || state == RunState.GENERATING_WORLD || state == RunState.GAMEOVER;
+        } catch (IllegalStateException e) {
+            return false;
         }
     }
 

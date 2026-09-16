@@ -35,6 +35,20 @@ public class TimerService {
         startTimeMillis = 0;
     }
 
+    public void restore(long elapsedMillis, boolean started, boolean running) {
+        trackedPlayerId = null;
+        waitingForInput = false;
+        elapsedTimeMillis = Math.max(0, elapsedMillis);
+        timerStartedThisRun = started;
+        if (started && running) {
+            startTimeMillis = System.currentTimeMillis() - elapsedTimeMillis;
+            timerRunning = true;
+        } else {
+            startTimeMillis = 0;
+            timerRunning = false;
+        }
+    }
+
     /**
      * Starts waiting for player input to begin the timer.
      *

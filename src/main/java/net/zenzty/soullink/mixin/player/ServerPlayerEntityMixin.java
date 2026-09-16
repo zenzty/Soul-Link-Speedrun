@@ -12,7 +12,6 @@ import net.zenzty.soullink.SoulLink;
 import net.zenzty.soullink.server.event.EventRegistry;
 import net.zenzty.soullink.server.manhunt.ManhuntManager;
 import net.zenzty.soullink.server.run.RunManager;
-import net.zenzty.soullink.server.settings.Settings;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -34,8 +33,7 @@ public abstract class ServerPlayerEntityMixin {
             return;
         }
 
-        if (Settings.getInstance().isManhuntMode()
-                && ManhuntManager.getInstance().isHunter(player)) {
+        if (runManager.isManhuntRun() && ManhuntManager.getInstance().isHunter(player)) {
             SoulLink.LOGGER.info(
                     "Hunter {} died - triggering custom respawn",
                     player.getName().getString());

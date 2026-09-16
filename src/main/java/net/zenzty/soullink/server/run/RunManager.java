@@ -1,9 +1,12 @@
 package net.zenzty.soullink.server.run;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
@@ -24,6 +27,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.raid.Raid;
 import net.minecraft.world.entity.raid.Raids;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.dimension.end.EnderDragonFight;
@@ -33,6 +37,7 @@ import net.zenzty.soullink.mixin.server.RaidAccessor;
 import net.zenzty.soullink.mixin.server.RaidManagerAccessor;
 import net.zenzty.soullink.server.event.EventRegistry;
 import net.zenzty.soullink.server.health.SharedStatsHandler;
+import net.zenzty.soullink.server.inventory.SharedInventoryHandler;
 import net.zenzty.soullink.server.manhunt.CompassTrackingHandler;
 import net.zenzty.soullink.server.manhunt.ManhuntManager;
 import net.zenzty.soullink.server.settings.Settings;
@@ -53,6 +58,10 @@ public class RunManager {
 
     private volatile RunState gameState = RunState.IDLE;
     private volatile boolean endInitialized = false;
+    private final Set<UUID> participants = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, RunSavedData.ResumeLocation> resumeLocations = new ConcurrentHashMap<>();
+    private boolean runManhuntMode;
+    private boolean runHalfHeartMode;
 
     public static Component getPrefix() {
         return Component.empty()
@@ -100,24 +109,8 @@ public class RunManager {
             return;
         }
         instance = new RunManager(server);
-
-        RunSavedData savedState = RunSavedData.get(server);
-        if (savedState.activeRunId != null && savedState.gameState.equals(RunState.RUNNING.name())) {
-            SoulLink.LOGGER.info("Recovering active run from crash/restart!");
-
-            // Re-open the persistent fantasy dimensions
-            instance.worldService.restoreRun(savedState.activeRunId, savedState.seed);
-
-            instance.gameState = RunState.RUNNING;
-
-            // NEW: Inject the saved spawn position so teleport logic works!
-            BlockPos recoveredSpawn = new BlockPos(savedState.spawnX, savedState.spawnY, savedState.spawnZ);
-            instance.spawnFinder.injectSpawnPos(recoveredSpawn);
-
-            // Restore the time AND resume the timer!
-            instance.timerService.setElapsedTimeMillis(savedState.elapsedTimeMillis);
-            instance.timerService.setRunning(true);
-        }
+        instance.tryRestorePersistedRun();
+        EventRegistry.handleExistingPlayers(server);
     }
 
     public static RunManager getInstance() {
@@ -130,18 +123,18 @@ public class RunManager {
     public static synchronized void cleanup() {
         RunManager currentInstance = instance;
         if (currentInstance != null) {
+            currentInstance.persistOnlineParticipants();
+            currentInstance.persistRunState(true);
+            SharedInventoryHandler.reset();
             ManhuntManager.getInstance().cleanupTeams(currentInstance.server);
             CompassTrackingHandler.reset();
             currentInstance.poolManager.cleanup();
-            currentInstance.worldService.deleteOldWorlds();
-
-            // ---> THE FIX IS HERE <---
-            // We only delete the active worlds if the game is OVER or IDLE.
-            // If the game is RUNNING, we leave the worlds alone so they survive the restart!
-            if (currentInstance.gameState != RunState.RUNNING) {
-                currentInstance.deleteWorlds(true);
+            UUID persistRunId = null;
+            RunSavedData saved = RunSavedData.get(currentInstance.server);
+            if (saved.hasPersistableRun()) {
+                persistRunId = saved.activeRunId;
             }
-
+            currentInstance.worldService.detachOrDeleteForShutdown(persistRunId);
             instance = null;
         }
     }
@@ -160,25 +153,18 @@ public class RunManager {
 
         SoulLink.LOGGER.info("Starting new run...");
         EventRegistry.clearDelayedTasks();
+        participants.clear();
+        resumeLocations.clear();
 
-        Settings.getInstance().applyPendingSettings();
-        SettingsPersistence.save(server);
-
-        if (!Settings.getInstance().isManhuntMode()) {
+        if (!Settings.getInstance().isManhuntModeForNextRun()) {
             ManhuntManager.getInstance().resetRoles();
         }
 
         clearEnderDragonBossbar();
         clearRaidBossbars();
-        worldService.saveCurrentWorldsAsOld();
-
-        // Get world from storage
-        PooledRun nextRun = poolManager.claimNextRun();
 
         SharedStatsHandler.reset();
-        if (Settings.getInstance().isSyncedInventory()) {
-            net.zenzty.soullink.server.inventory.SharedInventoryHandler.reset();
-        }
+        SharedInventoryHandler.reset();
         endInitialized = false;
         timerService.reset();
 
@@ -186,20 +172,14 @@ public class RunManager {
             player.setGameMode(GameType.SPECTATOR);
         }
 
+        PooledRun nextRun = poolManager.claimNextRun();
         if (nextRun != null) {
-            // STORAGE FULL -> INSTANT START
+            worldService.saveCurrentWorldsAsOld();
             worldService.adoptPooledRun(nextRun);
             spawnFinder.injectSpawnPos(nextRun.spawnPos());
-
             SoulLink.LOGGER.info("Storage full! Start");
             transitionToRunning();
-            RunSavedData data = RunSavedData.get(server);
-            data.activeRunId = nextRun.runId();
-            data.seed = nextRun.seed();
-            data.gameState = RunState.RUNNING.name();
-            data.setDirty(); // Tells Minecraft to save this to disk
         } else {
-            // STORAGE EMPTY -> (WAIT FOR POOL MANAGER)
             server.getPlayerList().broadcastSystemMessage(formatMessage("Generating world..."), true);
             gameState = RunState.GENERATING_WORLD;
             SoulLink.LOGGER.info("Pool empty! Waiting for world generation");
@@ -212,6 +192,7 @@ public class RunManager {
         if (gameState == RunState.GENERATING_WORLD) {
             PooledRun nextRun = poolManager.claimNextRun();
             if (nextRun != null) {
+                worldService.saveCurrentWorldsAsOld();
                 worldService.adoptPooledRun(nextRun);
                 spawnFinder.injectSpawnPos(nextRun.spawnPos());
                 transitionToRunning();
@@ -231,15 +212,13 @@ public class RunManager {
         }
 
         timerService.tick(server, this::isInRun, this::shouldSkipTimerActionBarFor);
-        if (server.getTickCount() % 20 == 0 && gameState == RunState.RUNNING) {
-            RunSavedData data = RunSavedData.get(server);
-            data.elapsedTimeMillis = timerService.getElapsedTimeMillis();
-            data.setDirty();
+        if (server.getTickCount() % 20 == 0) {
+            persistRunState();
         }
     }
 
     private boolean shouldSkipTimerActionBarFor(ServerPlayer p) {
-        if (!Settings.getInstance().isManhuntMode()) return false;
+        if (!runManhuntMode) return false;
         if (!ManhuntManager.getInstance().isHunter(p)) return false;
         return CompassTrackingHandler.shouldSuppressTimerActionBar(p.getUUID(), server.getTickCount());
     }
@@ -251,30 +230,22 @@ public class RunManager {
         if (overworld == null) return;
         if (spawnPos == null) spawnPos = new BlockPos(0, 64, 0);
 
+        Settings.getInstance().applyPendingSettings();
+        SettingsPersistence.save(server);
+        runManhuntMode = Settings.getInstance().isManhuntMode();
+        runHalfHeartMode = Settings.getInstance().isHalfHeartMode();
+
         worldService.resetWeatherForNewRun(overworld);
         worldService.resetTimeForNewRun();
         teleportService.forceloadSpawnChunks(overworld, spawnPos);
 
         gameState = RunState.RUNNING;
 
-        boolean manhunt = Settings.getInstance().isManhuntMode();
+        boolean manhunt = runManhuntMode;
         ManhuntManager manhuntManager = ManhuntManager.getInstance();
 
         if (manhunt) {
-            for (ServerLevel world : server.getAllLevels()) {
-                try {
-                    server.getCommands()
-                            .getDispatcher()
-                            .execute(
-                                    "execute in " + world.dimension().identifier() + " run gamerule locator_bar false",
-                                    server.createCommandSourceStack().withSuppressedOutput());
-                } catch (Exception e) {
-                    SoulLink.LOGGER.warn(
-                            "Could not disable locator_bar in {}: {}",
-                            world.dimension().identifier(),
-                            e.getMessage());
-                }
-            }
+            disableLocatorBar();
             manhuntManager.createTeams(server);
             manhuntManager.assignPlayersToTeams(server);
         }
@@ -282,9 +253,8 @@ public class RunManager {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             boolean syncToShared = !manhunt || manhuntManager.isSpeedrunner(player);
             teleportService.teleportToSpawn(player, overworld, spawnPos, timerService, syncToShared);
+            addParticipant(player.getUUID());
         }
-
-        worldService.deleteOldWorlds();
 
         if (manhunt) {
             CompassTrackingHandler.reset();
@@ -295,20 +265,27 @@ public class RunManager {
             applyHeadStartEffects(manhuntManager);
         }
 
+        persistRunState(true);
+        worldService.deleteOldWorlds();
+        worldService.cleanupOrphanedRunWorlds(worldService.getCurrentRunId());
         server.getPlayerList().broadcastSystemMessage(formatMessage("World ready! Good luck!"), false);
         SoulLink.LOGGER.info("World generation complete, run started");
+    }
 
-        RunSavedData data = RunSavedData.get(server);
-        data.activeRunId = worldService.getCurrentRunId(); // <-- THIS WAS MISSING
-        data.seed = worldService.getCurrentSeed();
-        data.gameState = RunState.RUNNING.name();
-        data.elapsedTimeMillis = 0;
-
-        // Add these three lines:
-        if (spawnPos != null) {
-            data.spawnX = spawnPos.getX();
-            data.spawnY = spawnPos.getY();
-            data.spawnZ = spawnPos.getZ();
+    private void disableLocatorBar() {
+        for (ServerLevel world : server.getAllLevels()) {
+            try {
+                server.getCommands()
+                        .getDispatcher()
+                        .execute(
+                                "execute in " + world.dimension().identifier() + " run gamerule locator_bar false",
+                                server.createCommandSourceStack().withSuppressedOutput());
+            } catch (Exception e) {
+                SoulLink.LOGGER.warn(
+                        "Could not disable locator_bar in {}: {}",
+                        world.dimension().identifier(),
+                        e.getMessage());
+            }
         }
     }
 
@@ -388,7 +365,7 @@ public class RunManager {
         if (gameState == RunState.RUNNING && spawnFinder.hasFoundSpawn()) {
             ServerLevel overworld = worldService.getOverworld();
             if (overworld != null) {
-                if (Settings.getInstance().isManhuntMode()) {
+                if (runManhuntMode) {
                     player.setGameMode(GameType.SPECTATOR);
                     player.getInventory().clearContent();
                     player.removeAllEffects();
@@ -408,13 +385,164 @@ public class RunManager {
                 } else {
                     teleportService.teleportToSpawn(player, overworld, spawnFinder.getSpawnPos(), timerService, true);
                     if (Settings.getInstance().isSyncedInventory()) {
-                        net.zenzty.soullink.server.inventory.SharedInventoryHandler.syncPlayerToShared(player);
+                        SharedInventoryHandler.syncPlayerToShared(player);
                     }
                     player.sendSystemMessage(
                             formatMessageWithPlayer("", player.getName().getString(), " joined. Stats synced."));
                 }
+                addParticipant(player.getUUID());
+                persistRunState();
             }
         }
+    }
+
+    public void returnPlayerToRunWorld(ServerPlayer player) {
+        ServerLevel playerWorld = getPlayerWorld(player);
+        if (playerWorld != null && isTemporaryWorld(playerWorld.dimension())) {
+            return;
+        }
+        teleportToResumeLocation(player, gameState == RunState.GAMEOVER);
+    }
+
+    public void reconnectPlayerToRun(ServerPlayer player) {
+        ServerLevel playerWorld = getPlayerWorld(player);
+        boolean alreadyInRun = playerWorld != null && isTemporaryWorld(playerWorld.dimension());
+        addParticipant(player.getUUID());
+
+        if (gameState == RunState.GAMEOVER) {
+            if (!alreadyInRun) {
+                teleportToResumeLocation(player, true);
+            } else {
+                player.setGameMode(GameType.SPECTATOR);
+            }
+            player.sendSystemMessage(formatMessage("Run has ended. Use /start to begin a new run."));
+            return;
+        }
+
+        if (gameState != RunState.RUNNING) {
+            return;
+        }
+
+        boolean manhunt = runManhuntMode;
+        ManhuntManager manhuntManager = ManhuntManager.getInstance();
+        boolean unassignedSpectator =
+                manhunt && !manhuntManager.isSpeedrunner(player) && !manhuntManager.isHunter(player);
+        boolean syncToShared = !manhunt || manhuntManager.isSpeedrunner(player);
+
+        if (unassignedSpectator) {
+            player.setGameMode(GameType.SPECTATOR);
+        } else {
+            player.setGameMode(GameType.SURVIVAL);
+        }
+
+        if (!alreadyInRun) {
+            teleportToResumeLocation(player, unassignedSpectator);
+        }
+
+        teleportService.applyRunAttributes(player, runHalfHeartMode && syncToShared);
+
+        if (syncToShared) {
+            SharedStatsHandler.syncPlayerToSharedStats(player);
+            if (Settings.getInstance().isSyncedInventory()) {
+                if (SharedInventoryHandler.hasItems()) {
+                    SharedInventoryHandler.syncPlayerToShared(player);
+                } else {
+                    SharedInventoryHandler.copyFromPlayer(player);
+                }
+            }
+            if (!timerService.hasStartedThisRun()) {
+                timerService.beginWaitingForInput(player);
+            }
+        }
+
+        if (manhunt && manhuntManager.isHunter(player) && !hasTrackingCompass(player)) {
+            CompassTrackingHandler.giveTrackingCompass(player);
+        }
+
+        if (manhunt && (manhuntManager.isHunter(player) || manhuntManager.isSpeedrunner(player))) {
+            manhuntManager.assignPlayersToTeams(server);
+        }
+
+        rememberResumeLocation(player);
+        persistRunState();
+        player.sendSystemMessage(formatMessage("Run resumed."));
+        SoulLink.LOGGER.info("Reconnected {} to run", player.getName().getString());
+    }
+
+    private void teleportToResumeLocation(ServerPlayer player, boolean spectator) {
+        RunSavedData.ResumeLocation location = resumeLocations.get(player.getUUID());
+        ServerLevel world = worldForResumeDimension(location == null ? "ow" : location.dimension());
+        if (world == null) {
+            world = worldService.getOverworld();
+        }
+        if (world == null) {
+            return;
+        }
+        if (spectator) {
+            player.setGameMode(GameType.SPECTATOR);
+        }
+        if (location != null) {
+            teleportService.teleportPreservingState(
+                    player, world, location.x(), location.y(), location.z(), location.yaw(), location.pitch());
+            return;
+        }
+        BlockPos spawnPos = spawnFinder.getSpawnPos();
+        if (spawnPos == null) {
+            spawnPos = new BlockPos(0, 64, 0);
+        }
+        teleportService.teleportPreservingState(player, world, spawnPos);
+    }
+
+    private ServerLevel worldForResumeDimension(String dimension) {
+        if (dimension == null) {
+            return worldService.getOverworld();
+        }
+        return switch (dimension) {
+            case "nether" -> worldService.getNether();
+            case "end" -> worldService.getEnd();
+            default -> worldService.getOverworld();
+        };
+    }
+
+    private void rememberResumeLocation(ServerPlayer player) {
+        ServerLevel world = getPlayerWorld(player);
+        if (world == null || !isTemporaryWorld(world.dimension())) {
+            return;
+        }
+        String dimension = "ow";
+        if (world.dimension().equals(worldService.getNetherKey())) {
+            dimension = "nether";
+        } else if (world.dimension().equals(worldService.getEndKey())) {
+            dimension = "end";
+        }
+        resumeLocations.put(
+                player.getUUID(),
+                new RunSavedData.ResumeLocation(
+                        dimension, player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
+    }
+
+    private static boolean hasTrackingCompass(ServerPlayer player) {
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            if (player.getInventory().getItem(i).is(Items.COMPASS)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isParticipant(UUID playerId) {
+        return playerId != null && participants.contains(playerId);
+    }
+
+    public void addParticipant(UUID playerId) {
+        if (playerId != null) {
+            participants.add(playerId);
+        }
+    }
+
+    public void rememberPlayerOnDisconnect(ServerPlayer player) {
+        addParticipant(player.getUUID());
+        rememberResumeLocation(player);
     }
 
     public synchronized void triggerGameOver() {
@@ -469,12 +597,7 @@ public class RunManager {
                 .append(Component.literal(" to start a new attempt.").withStyle(ChatFormatting.GRAY));
 
         server.getPlayerList().broadcastSystemMessage(restartMessage, false);
-
-        RunSavedData data = RunSavedData.get(server);
-        data.activeRunId = null;
-        data.gameState = RunState.GAMEOVER.name();
-        data.elapsedTimeMillis = 0;
-        data.setDirty();
+        persistRunState(true);
     }
 
     public synchronized void triggerVictory() {
@@ -529,6 +652,140 @@ public class RunManager {
                 .append(Component.literal("/start").withStyle(ChatFormatting.GOLD))
                 .append(Component.literal(" to challenge again.").withStyle(ChatFormatting.GRAY));
         server.getPlayerList().broadcastSystemMessage(restartMessage, false);
+        persistRunState(true);
+    }
+
+    private void tryRestorePersistedRun() {
+        SharedInventoryHandler.reset();
+        RunSavedData saved = RunSavedData.get(server);
+        RunState restoredState = RunSavedData.parseGameState(saved.gameState);
+        if (saved.activeRunId == null || (restoredState != RunState.RUNNING && restoredState != RunState.GAMEOVER)) {
+            ManhuntManager.getInstance().resetRoles();
+            ManhuntManager.getInstance().cleanupTeams(server);
+            worldService.cleanupOrphanedRunWorlds(null);
+            return;
+        }
+
+        try {
+            worldService.restoreRun(saved.activeRunId, saved.seed);
+            spawnFinder.injectSpawnPos(new BlockPos(saved.spawnX, saved.spawnY, saved.spawnZ));
+            gameState = restoredState;
+            endInitialized = saved.endInitialized;
+            runManhuntMode = saved.extrasPresent
+                    ? saved.manhuntMode
+                    : Settings.getInstance().isManhuntMode();
+            runHalfHeartMode = saved.extrasPresent
+                    ? saved.halfHeartMode
+                    : Settings.getInstance().isHalfHeartMode();
+
+            boolean timerStarted = saved.timerStarted;
+            boolean timerRunning = saved.timerRunning;
+            if (!saved.extrasPresent && restoredState == RunState.RUNNING) {
+                timerStarted = true;
+                timerRunning = true;
+            }
+            timerService.restore(saved.elapsedTimeMillis, timerStarted, timerRunning);
+            float maxHealth = runHalfHeartMode ? 1.0f : 20.0f;
+            SharedStatsHandler.restore(
+                    saved.sharedHealth, saved.sharedHunger, saved.sharedSaturation, saved.sharedAbsorption, maxHealth);
+
+            participants.clear();
+            participants.addAll(saved.parseUuids(saved.participantIds));
+            participants.addAll(saved.parseUuids(saved.runners));
+            participants.addAll(saved.parseUuids(saved.hunters));
+            resumeLocations.clear();
+            resumeLocations.putAll(saved.resumeLocations);
+
+            ManhuntManager manhuntManager = ManhuntManager.getInstance();
+            if (runManhuntMode) {
+                manhuntManager.restoreRoles(saved.parseUuids(saved.runners), saved.parseUuids(saved.hunters));
+                disableLocatorBar();
+                manhuntManager.createTeams(server);
+                manhuntManager.assignPlayersToTeams(server);
+            } else {
+                manhuntManager.resetRoles();
+                manhuntManager.cleanupTeams(server);
+            }
+
+            ServerLevel overworld = worldService.getOverworld();
+            BlockPos spawnPos = spawnFinder.getSpawnPos();
+            if (overworld != null && spawnPos != null) {
+                teleportService.forceloadSpawnChunks(overworld, spawnPos);
+            }
+
+            if (restoredState == RunState.RUNNING && endInitialized) {
+                EndFightInitializer.initialize(worldService.getEnd());
+            }
+
+            worldService.cleanupOrphanedRunWorlds(saved.activeRunId);
+            SoulLink.LOGGER.info("Restored {} run {}", restoredState, saved.activeRunId);
+        } catch (Exception e) {
+            SoulLink.LOGGER.error("Failed to restore run", e);
+            gameState = RunState.IDLE;
+            participants.clear();
+            resumeLocations.clear();
+            timerService.reset();
+            ManhuntManager.getInstance().resetRoles();
+            ManhuntManager.getInstance().cleanupTeams(server);
+            worldService.cleanupOrphanedRunWorlds(null);
+        }
+    }
+
+    private void persistOnlineParticipants() {
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (isInRun(player)) {
+                addParticipant(player.getUUID());
+                rememberResumeLocation(player);
+            }
+        }
+    }
+
+    private void persistRunState() {
+        persistRunState(false);
+    }
+
+    private void persistRunState(boolean flush) {
+        if (gameState != RunState.RUNNING && gameState != RunState.GAMEOVER) {
+            return;
+        }
+        UUID runId = worldService.getCurrentRunId();
+        if (runId == null) {
+            return;
+        }
+        persistOnlineParticipants();
+        BlockPos spawn = spawnFinder.getSpawnPos();
+        if (spawn == null) {
+            spawn = new BlockPos(0, 64, 0);
+        }
+
+        RunSavedData data = RunSavedData.get(server);
+        data.activeRunId = runId;
+        data.seed = worldService.getCurrentSeed();
+        data.elapsedTimeMillis = timerService.getElapsedTimeMillis();
+        data.gameState = gameState.name();
+        data.spawnX = spawn.getX();
+        data.spawnY = spawn.getY();
+        data.spawnZ = spawn.getZ();
+        data.extrasPresent = true;
+        data.timerStarted = timerService.hasStartedThisRun();
+        data.timerRunning = timerService.isRunning();
+        data.sharedHealth = SharedStatsHandler.getSharedHealth();
+        data.sharedHunger = SharedStatsHandler.getSharedHunger();
+        data.sharedSaturation = SharedStatsHandler.getSharedSaturation();
+        data.sharedAbsorption = SharedStatsHandler.getSharedAbsorption();
+        data.endInitialized = endInitialized;
+        if (!participants.isEmpty()) {
+            data.participantIds = RunSavedData.uuidsToStrings(participants);
+        }
+        data.manhuntMode = runManhuntMode;
+        data.halfHeartMode = runHalfHeartMode;
+        data.runners = RunSavedData.uuidsToStrings(ManhuntManager.getInstance().getRunners());
+        data.hunters = RunSavedData.uuidsToStrings(ManhuntManager.getInstance().getHunters());
+        data.resumeLocations = new LinkedHashMap<>(resumeLocations);
+        data.setDirty();
+        if (flush) {
+            server.overworld().getDataStorage().saveAndJoin();
+        }
     }
 
     public boolean isPlayerInRun(ServerPlayer player) {
@@ -600,6 +857,11 @@ public class RunManager {
 
     public void setEndInitialized(boolean initialized) {
         this.endInitialized = initialized;
+        persistRunState(true);
+    }
+
+    public boolean isManhuntRun() {
+        return runManhuntMode;
     }
 
     public ServerLevel getTemporaryOverworld() {

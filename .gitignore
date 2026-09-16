@@ -27,7 +27,7 @@ jars/
 .vscode/
 
 # Fabric runtime
-run/
+/run/
 
 # Logs and debug artifacts
 *.log

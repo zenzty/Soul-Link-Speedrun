@@ -1,5 +1,6 @@
 package net.zenzty.soullink.server.manhunt;
 
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -45,6 +46,14 @@ public class ManhuntManager {
         runners.clear();
         hunters.clear();
         SoulLink.LOGGER.info("Manhunt roles reset");
+    }
+
+    public void restoreRoles(Collection<UUID> restoredRunners, Collection<UUID> restoredHunters) {
+        runners.clear();
+        hunters.clear();
+        runners.addAll(restoredRunners);
+        hunters.addAll(restoredHunters);
+        SoulLink.LOGGER.info("Restored manhunt roles: {} runners, {} hunters", runners.size(), hunters.size());
     }
 
     /**
