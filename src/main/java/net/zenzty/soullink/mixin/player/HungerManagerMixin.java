@@ -28,6 +28,17 @@ public abstract class HungerManagerMixin {
 
     @Unique private float previousSaturation = 5.0f;
 
+    @Unique private boolean hungerBaselineReady;
+
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void captureHungerBaseline(ServerPlayer player, CallbackInfo ci) {
+        if (!this.hungerBaselineReady) {
+            this.previousFoodLevel = this.foodLevel;
+            this.previousSaturation = this.saturationLevel;
+            this.hungerBaselineReady = true;
+        }
+    }
+
     /**
      * After each hunger update tick, check if values changed and sync. Note: In 1.21.11,
      * HungerManager.update() takes ServerPlayerEntity directly.
