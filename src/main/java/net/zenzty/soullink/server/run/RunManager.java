@@ -163,7 +163,6 @@ public class RunManager {
         clearEnderDragonBossbar();
         clearRaidBossbars();
 
-        SharedStatsHandler.reset();
         SharedInventoryHandler.reset();
         endInitialized = false;
         timerService.reset();
@@ -234,6 +233,7 @@ public class RunManager {
         SettingsPersistence.save(server);
         runManhuntMode = Settings.getInstance().isManhuntMode();
         runHalfHeartMode = Settings.getInstance().isHalfHeartMode();
+        SharedStatsHandler.reset();
 
         worldService.resetWeatherForNewRun(overworld);
         worldService.resetTimeForNewRun();
