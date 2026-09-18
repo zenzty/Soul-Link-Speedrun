@@ -115,9 +115,9 @@ The run is only considered a success once the Ender Dragon is defeated.
 
 | Dependency |  Version   | Type | Note                             |
 | :--- |:----------:| :---: |:---------------------------------|
-| **Fabric Loader** | `>=0.19.3` | Required | Minimum version 0.19.3           |
-| **Fabric API** |    `*`     | Required | Any version compatible with 26.1 |
-| **Fantasy** |  `v0.8.0`  | Included | Bundled in mod JAR               |
+| **Fabric Loader** | `>=0.19.5` | Required | Minimum version 0.19.5           |
+| **Fabric API** |    `*`     | Required | Any version compatible with 26.3 |
+| **Fantasy** |  `v0.8.4`  | Included | Bundled in mod JAR               |
 
 <br>
 
