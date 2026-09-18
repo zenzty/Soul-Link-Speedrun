@@ -65,7 +65,7 @@ public class SharedStatsHandler {
             return false;
         }
         if (!runManager.isRunActive()) return false;
-        if (!Settings.getInstance().isManhuntMode()) return true;
+        if (!runManager.isManhuntRun()) return true;
         return ManhuntManager.getInstance().isSpeedrunner(player);
     }
 
@@ -92,6 +92,20 @@ public class SharedStatsHandler {
         SharedJumpHandler.reset();
 
         SoulLink.LOGGER.info("Shared stats reset to defaults (maxHealth={})", maxHealth);
+    }
+
+    public static void restore(float health, int hunger, float saturation, float absorption, float maxHealth) {
+        sharedHealth = Mth.clamp(health, 0.0f, maxHealth);
+        sharedHunger = Mth.clamp(hunger, 0, 20);
+        sharedSaturation = Math.max(0.0f, saturation);
+        sharedAbsorption = Math.max(0.0f, absorption);
+        isSyncing = false;
+        regenAccumulator = 0.0f;
+        regenerationHealAccumulator = 0.0f;
+        hungerDrainAccumulator = 0.0f;
+        saturationDrainAccumulator = 0.0f;
+        damageAccumulator = 0.0f;
+        SoulLink.LOGGER.info("Shared stats restored (maxHealth={})", maxHealth);
     }
 
     /**
@@ -776,6 +790,10 @@ public class SharedStatsHandler {
 
     public static float getSharedSaturation() {
         return sharedSaturation;
+    }
+
+    public static float getSharedAbsorption() {
+        return sharedAbsorption;
     }
 
     /**

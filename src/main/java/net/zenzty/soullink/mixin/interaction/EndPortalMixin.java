@@ -8,11 +8,10 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.EndPortalBlock;
-import net.minecraft.world.level.dimension.end.EnderDragonFight;
 import net.minecraft.world.level.portal.TeleportTransition;
 import net.minecraft.world.phys.Vec3;
 import net.zenzty.soullink.SoulLink;
-import net.zenzty.soullink.mixin.server.ServerWorldAccessor;
+import net.zenzty.soullink.server.run.EndFightInitializer;
 import net.zenzty.soullink.server.run.RunManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -69,7 +68,7 @@ public abstract class EndPortalMixin {
             if (destinationWorld != null) {
                 // Initialize the End if first time entering (tracked by RunManager)
                 if (!runManager.isEndInitialized()) {
-                    if (initializeEnd(destinationWorld)) {
+                    if (EndFightInitializer.initialize(destinationWorld)) {
                         runManager.setEndInitialized(true);
                     }
                 }
@@ -127,59 +126,6 @@ public abstract class EndPortalMixin {
                     from.identifier(),
                     to.identifier());
         }
-    }
-
-    /**
-     * Initializes the End dimension by creating and injecting an EnderDragonFight. Fantasy
-     * temporary worlds don't automatically get one, so we create it manually.
-     */
-    @Unique private boolean initializeEnd(ServerLevel endWorld) {
-        SoulLink.LOGGER.info("Initializing temporary End dimension...");
-
-        // Force-load the central chunks to ensure End island and structures are generated
-        // Load a smaller area to reduce server spike
-        for (int x = -2; x <= 2; x++) {
-            for (int z = -2; z <= 2; z++) {
-                endWorld.getChunk(x, z);
-            }
-        }
-        SoulLink.LOGGER.info("Loaded central End chunks");
-
-        // Check if EnderDragonFight already exists
-        EnderDragonFight existingFight = endWorld.getDragonFight();
-
-        if (existingFight != null) {
-            SoulLink.LOGGER.info("EnderDragonFight already exists");
-            return true;
-        }
-
-        // Fantasy temporary worlds don't get EnderDragonFight automatically
-        // We need to create one and inject it using our accessor
-        SoulLink.LOGGER.info("Creating EnderDragonFight for temporary End world...");
-
-        try {
-            // Create a fresh EnderDragonFight with default state (dragon not yet killed)
-            EnderDragonFight dragonFight = EnderDragonFight.createDefault();
-            dragonFight.init(endWorld, endWorld.getSeed(), net.minecraft.core.BlockPos.ZERO);
-
-            // Inject it into the world using our accessor
-            ((ServerWorldAccessor) endWorld).setEnderDragonFight(dragonFight);
-
-            SoulLink.LOGGER.info("EnderDragonFight created and injected successfully");
-
-            // Verify it was set
-            EnderDragonFight verifyFight = endWorld.getDragonFight();
-            if (verifyFight != null) {
-                SoulLink.LOGGER.info("Verified: EnderDragonFight is now active");
-                SoulLink.LOGGER.info("Temporary End initialization complete");
-                return true;
-            }
-        } catch (Exception e) {
-            SoulLink.LOGGER.error("Failed to create EnderDragonFight", e);
-        }
-
-        SoulLink.LOGGER.warn("Temporary End initialization failed");
-        return false;
     }
 
     /**

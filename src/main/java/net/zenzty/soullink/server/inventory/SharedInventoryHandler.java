@@ -52,8 +52,7 @@ public class SharedInventoryHandler {
         if (!runManager.isPlayerInRun(player)) {
             return false;
         }
-        if (Settings.getInstance().isManhuntMode()
-                && ManhuntManager.getInstance().isHunter(player)) {
+        if (runManager.isManhuntRun() && ManhuntManager.getInstance().isHunter(player)) {
             return false;
         }
         return true;
@@ -70,6 +69,17 @@ public class SharedInventoryHandler {
         }
         isSyncing = false;
         SoulLink.LOGGER.info("Shared inventory reset.");
+    }
+
+    public static boolean hasItems() {
+        synchronized (MASTER) {
+            for (ItemStack stack : MASTER) {
+                if (stack != null && !stack.isEmpty()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -218,8 +228,7 @@ public class SharedInventoryHandler {
         if (runManager == null || !runManager.isRunActive()) {
             return;
         }
-        if (Settings.getInstance().isManhuntMode()
-                && ManhuntManager.getInstance().isHunter(player)) {
+        if (runManager.isManhuntRun() && ManhuntManager.getInstance().isHunter(player)) {
             return;
         }
         if (!runManager.isPlayerInRun(player)) {

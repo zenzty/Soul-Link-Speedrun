@@ -150,7 +150,7 @@ _Please read this carefully before asking for support._
 **No.** The mod is fundamentally designed as a Speedrun challenge. The core mechanic dictates that death results in a "Game Over" to encourage replayability. If you prefer a persistent survival experience with shared health but without resets, we recommend looking for "Shared Vitality" alternatives.
 
 ## Can we save our progress or the current world?
-Currently, worlds are generated as temporary instances via the Fantasy library. When the server closes or the run ends, the world is deleted.
+**Yes.** Stopping the server pauses the active run: the world, timer, shared health, and inventories are saved on disk. Starting the server again resumes that run. Use `/start` after a game over (or `/reset` / `/stoprun` first) when you want a fresh world.
 
 ## Can I use existing worlds?
 The mod is designed to generate its own temporary worlds. Using it on an existing standard vanilla save is **not recommended** as it may conflict with the mod's loop/reset mechanics. Always backup your data before testing!

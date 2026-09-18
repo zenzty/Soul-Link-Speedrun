@@ -35,7 +35,6 @@ import net.zenzty.soullink.server.manhunt.CompassTrackingHandler;
 import net.zenzty.soullink.server.manhunt.ManhuntManager;
 import net.zenzty.soullink.server.run.RunManager;
 import net.zenzty.soullink.server.run.RunState;
-import net.zenzty.soullink.server.settings.Settings;
 import net.zenzty.soullink.server.settings.SettingsPersistence;
 
 /**
@@ -68,6 +67,85 @@ public class EventRegistry {
         CompassTrackingHandler.register();
     }
 
+    public static void handleExistingPlayers(MinecraftServer server) {
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            handleJoin(player, false);
+        }
+    }
+
+    private static void handleJoin(ServerPlayer player, boolean delayPostJoin) {
+        RunManager runManager;
+        try {
+            runManager = RunManager.getInstance();
+        } catch (IllegalStateException e) {
+            return;
+        }
+
+        if (runManager.getGameState() == RunState.IDLE) {
+            runManager.teleportToVanillaSpawn(player);
+        } else if (runManager.getGameState() == RunState.RUNNING || runManager.getGameState() == RunState.GAMEOVER) {
+            ServerLevel currentWorld = player.level();
+            boolean inRunWorld = currentWorld != null && runManager.isTemporaryWorld(currentWorld.dimension());
+            if (!inRunWorld && runManager.isParticipant(player.getUUID())) {
+                runManager.returnPlayerToRunWorld(player);
+            }
+        }
+
+        Runnable postJoin = () -> handlePostJoin(player, runManager);
+        if (delayPostJoin) {
+            scheduleDelayed(10, postJoin);
+        } else {
+            postJoin.run();
+        }
+    }
+
+    private static void handlePostJoin(ServerPlayer player, RunManager runManager) {
+        if (player.isRemoved()) {
+            return;
+        }
+
+        RunState state = runManager.getGameState();
+        switch (state) {
+            case IDLE:
+                sendWelcomeMessage(player);
+                break;
+
+            case GENERATING_WORLD:
+                ServerLevel generatingWorld = player.level();
+                if (generatingWorld != null && !runManager.isTemporaryWorld(generatingWorld.dimension())) {
+                    runManager.teleportPlayerToRun(player);
+                }
+                break;
+
+            case RUNNING:
+                ServerLevel playerWorld = player.level();
+                if (playerWorld == null) {
+                    return;
+                }
+
+                if (runManager.isTemporaryWorld(playerWorld.dimension())
+                        || runManager.isParticipant(player.getUUID())) {
+                    runManager.reconnectPlayerToRun(player);
+                } else {
+                    SoulLink.LOGGER.info(
+                            "Late joiner detected: {} - teleporting to run",
+                            player.getName().getString());
+                    runManager.teleportPlayerToRun(player);
+                }
+                break;
+
+            case GAMEOVER:
+                if (runManager.isParticipant(player.getUUID())
+                        || (player.level() != null
+                                && runManager.isTemporaryWorld(player.level().dimension()))) {
+                    runManager.reconnectPlayerToRun(player);
+                } else {
+                    player.sendSystemMessage(RunManager.formatMessage("Run has ended. Use /start to begin a new run."));
+                }
+                break;
+        }
+    }
+
     /**
      * Block/item use events. Delayed sync (UseBlockCallback/UseItemCallback + scheduleDelayed) was
      * causing "invalid player data" when the task ran during disconnect/save. Disabled; block
@@ -81,20 +159,16 @@ public class EventRegistry {
      * Registers server lifecycle events for initialization and cleanup.
      */
     private static void registerServerEvents() {
-        // Server started - initialize RunManager and load persisted settings
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            SoulLink.LOGGER.info("Server started - initializing RunManager");
-            RunManager.init(server);
+            SoulLink.LOGGER.info("Server started - loading settings and initializing RunManager");
             SettingsPersistence.load(server);
-            ManhuntManager.getInstance().resetRoles();
-            ManhuntManager.getInstance().cleanupTeams(server);
+            RunManager.init(server);
         });
 
-        // Server stopping - save settings, then cleanup worlds
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
-            SoulLink.LOGGER.info("Server stopping - saving settings and cleaning up temporary worlds");
+            SoulLink.LOGGER.info("Server stopping - saving settings");
             SettingsPersistence.save(server);
-            DELAYED_TASKS.clear(); // Clear pending tasks
+            DELAYED_TASKS.clear();
             RunManager.cleanup();
         });
     }
@@ -103,65 +177,9 @@ public class EventRegistry {
      * Registers player connection events for player connections and disconnects.
      */
     private static void registerConnectionEvents() {
-        // Player joins - show welcome or handle late join
+        // Player joins - show welcome or handle late join / reconnection
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
-            ServerPlayer player = handler.getPlayer();
-
-            // Check if RunManager is initialized (might not be if server just started)
-            // But usually SERVER_STARTED runs before player join.
-            // However, use try-catch or check to be safe if getInstance throws.
-            RunManager runManager;
-            try {
-                runManager = RunManager.getInstance();
-            } catch (IllegalStateException e) {
-                return;
-            }
-
-            if (runManager == null) {
-                return;
-            }
-
-            // IMMEDIATELY teleport if IDLE to prevent suffocation damage
-            if (runManager.getGameState() == RunState.IDLE) {
-                runManager.teleportToVanillaSpawn(player);
-            }
-
-            // Delay other handling to ensure player is fully loaded
-            scheduleDelayed(10, () -> {
-                // Return early if player has disconnected in the meantime
-                if (player.isRemoved()) {
-                    return;
-                }
-
-                RunState state = runManager.getGameState();
-
-                switch (state) {
-                    case IDLE:
-                        sendWelcomeMessage(player);
-                        break;
-
-                    case GENERATING_WORLD:
-                    case RUNNING:
-                        // Run in progress - teleport player to it
-                        ServerLevel playerWorld = player.level();
-                        if (playerWorld == null) {
-                            return;
-                        }
-
-                        if (!runManager.isTemporaryWorld(playerWorld.dimension())) {
-                            SoulLink.LOGGER.info(
-                                    "Late joiner detected: {} - teleporting to run",
-                                    player.getName().getString());
-                            runManager.teleportPlayerToRun(player);
-                        }
-                        break;
-
-                    case GAMEOVER:
-                        player.sendSystemMessage(
-                                RunManager.formatMessage("Run has ended. Use /start to begin a new run."));
-                        break;
-                }
-            });
+            handleJoin(handler.getPlayer(), true);
         });
 
         // Player disconnects - log for debugging
@@ -175,7 +193,8 @@ public class EventRegistry {
                 return;
             }
 
-            if (runManager != null && runManager.isRunActive()) {
+            if (runManager.isRunActive() || runManager.isGameOver()) {
+                runManager.rememberPlayerOnDisconnect(player);
                 SoulLink.LOGGER.info(
                         "Player {} disconnected during active run",
                         player.getName().getString());
@@ -288,7 +307,7 @@ public class EventRegistry {
 
             if (runManager != null) {
                 runManager.tick();
-                if (runManager.isRunActive() && Settings.getInstance().isManhuntMode()) {
+                if (runManager.isRunActive() && runManager.isManhuntRun()) {
                     CompassTrackingHandler.tick(server);
                 }
             }
@@ -359,9 +378,6 @@ public class EventRegistry {
             }
 
             // Allow all damage through - the actual death check happens in ServerPlayerEntityMixin
-            // when health truly hits 0 (after armor/enchantment reductions are applied).
-            // Previously we checked raw damage here, but that caused false positives since
-            // 'amount' is before armor reduction (e.g., iron golem 15 raw → 7 actual with armor).
             return true;
         });
 
@@ -390,8 +406,7 @@ public class EventRegistry {
                 SoulLink.LOGGER.warn(
                         "Player {} reached 0 health despite mixin check - triggering death handler",
                         player.getName().getString());
-                if (Settings.getInstance().isManhuntMode()
-                        && ManhuntManager.getInstance().isHunter(player)) {
+                if (runManager.isManhuntRun() && ManhuntManager.getInstance().isHunter(player)) {
                     handleHunterDeath(player, source, runManager);
                 } else {
                     handlePlayerDeath(player, source, runManager);
@@ -408,8 +423,7 @@ public class EventRegistry {
                 return;
             }
 
-            if (Settings.getInstance().isManhuntMode()
-                    && ManhuntManager.getInstance().isHunter(player)) {
+            if (runManager.isManhuntRun() && ManhuntManager.getInstance().isHunter(player)) {
                 return;
             }
 
@@ -433,13 +447,7 @@ public class EventRegistry {
     }
 
     /**
-     * Handles Hunter death in Manhunt: broadcast, clear bad effects, switch to spectator, drop
-     * non-compass items, 5s countdown, then respawn at run spawn with full stats and a new tracking
-     * compass.
-     *
-     * @param player the hunter who died
-     * @param source the damage source
-     * @param runManager the run manager (used for spawn, run state, and overworld)
+     * Handles Hunter death in Manhunt
      */
     public static void handleHunterDeath(ServerPlayer player, DamageSource source, RunManager runManager) {
         MinecraftServer server = runManager.getServer();
@@ -546,8 +554,7 @@ public class EventRegistry {
     }
 
     /**
-     * Clears all pending delayed tasks. Called when starting a new run so that tasks from a
-     * previous run (e.g. hunter respawn countdown) do not carry over.
+     * Clears all pending delayed tasks.
      */
     public static void clearDelayedTasks() {
         DELAYED_TASKS.clear();

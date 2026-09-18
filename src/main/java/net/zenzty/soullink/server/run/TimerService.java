@@ -35,6 +35,20 @@ public class TimerService {
         startTimeMillis = 0;
     }
 
+    public void restore(long elapsedMillis, boolean started, boolean running) {
+        trackedPlayerId = null;
+        waitingForInput = false;
+        elapsedTimeMillis = Math.max(0, elapsedMillis);
+        timerStartedThisRun = started;
+        if (started && running) {
+            startTimeMillis = System.currentTimeMillis() - elapsedTimeMillis;
+            timerRunning = true;
+        } else {
+            startTimeMillis = 0;
+            timerRunning = false;
+        }
+    }
+
     /**
      * Starts waiting for player input to begin the timer.
      *
@@ -198,5 +212,27 @@ public class TimerService {
 
     public boolean hasStartedThisRun() {
         return timerStartedThisRun;
+    }
+    /**
+     * Sets the elapsed time in milliseconds. Used when restoring a saved run state.
+     * Automatically recalibrates the start time if the timer is actively running.
+     */
+    public void setElapsedTimeMillis(long timeMillis) {
+        this.elapsedTimeMillis = timeMillis;
+        if (this.timerRunning) {
+            this.startTimeMillis = System.currentTimeMillis() - timeMillis;
+        }
+    }
+
+    /**
+     * Forcefully restores the execution state of the timer when loading data.
+     */
+    public void setRunning(boolean running) {
+        this.timerRunning = running;
+        if (running) {
+            this.timerStartedThisRun = true;
+            this.waitingForInput = false;
+            this.startTimeMillis = System.currentTimeMillis() - this.elapsedTimeMillis;
+        }
     }
 }

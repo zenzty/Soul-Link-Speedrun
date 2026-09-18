@@ -25,7 +25,7 @@ public final class SettingsPersistence {
 
     /**
      * Loads settings from the world save. If the file is missing or invalid, settings keep their
-     * in-memory defaults. Call after RunManager.init on SERVER_STARTED.
+     * in-memory defaults. Call on SERVER_STARTED before RunManager.init.
      */
     public static void load(MinecraftServer server) {
         Path path = getSettingsPath(server);
@@ -38,6 +38,7 @@ public final class SettingsPersistence {
             Object parsed = parseSettingsData(json);
             if (parsed instanceof SettingsData data) {
                 applyToSettings(data);
+                restorePending(data);
                 SoulLink.LOGGER.info("Loaded Soul Link settings from {}", path);
             }
         } catch (IOException e) {
@@ -111,19 +112,47 @@ public final class SettingsPersistence {
         Settings s = Settings.getInstance();
         SettingsData data = new SettingsData();
         data.damageLogEnabled = s.isDamageLogEnabled();
-        // Use pending chaos snapshot if one exists (user confirmed /chaos changes during a run;
-        // those apply next run), otherwise use current applied values.
-        Settings.SettingsSnapshot chaos = s.getPendingSnapshotOrNull();
-        if (chaos == null) {
-            chaos = s.createSnapshot();
+        Settings.SettingsSnapshot applied = s.createSnapshot();
+        data.difficulty = applied.difficulty().name();
+        data.halfHeartMode = applied.halfHeartMode();
+        data.sharedPotions = applied.sharedPotions();
+        data.sharedJumping = applied.sharedJumping();
+        data.manhuntMode = applied.manhuntMode();
+        data.syncedInventory = applied.syncedInventory();
+
+        Settings.SettingsSnapshot pending = s.getPendingSnapshotOrNull();
+        if (pending != null) {
+            data.pending = true;
+            data.pendingDifficulty = pending.difficulty().name();
+            data.pendingHalfHeartMode = pending.halfHeartMode();
+            data.pendingSharedPotions = pending.sharedPotions();
+            data.pendingSharedJumping = pending.sharedJumping();
+            data.pendingManhuntMode = pending.manhuntMode();
+            data.pendingSyncedInventory = pending.syncedInventory();
         }
-        data.difficulty = chaos.difficulty().name();
-        data.halfHeartMode = chaos.halfHeartMode();
-        data.sharedPotions = chaos.sharedPotions();
-        data.sharedJumping = chaos.sharedJumping();
-        data.manhuntMode = chaos.manhuntMode();
-        data.syncedInventory = chaos.syncedInventory();
         return data;
+    }
+
+    private static void restorePending(SettingsData data) {
+        if (!Boolean.TRUE.equals(data.pending)) {
+            return;
+        }
+        Settings s = Settings.getInstance();
+        Difficulty difficulty = s.getDifficulty();
+        if (data.pendingDifficulty != null && !data.pendingDifficulty.isBlank()) {
+            try {
+                difficulty = Difficulty.valueOf(data.pendingDifficulty.toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+                // keep applied
+            }
+        }
+        s.restorePendingSnapshot(new Settings.SettingsSnapshot(
+                difficulty,
+                data.pendingHalfHeartMode != null ? data.pendingHalfHeartMode : s.isHalfHeartMode(),
+                data.pendingSharedPotions != null ? data.pendingSharedPotions : s.isSharedPotions(),
+                data.pendingSharedJumping != null ? data.pendingSharedJumping : s.isSharedJumping(),
+                data.pendingManhuntMode != null ? data.pendingManhuntMode : s.isManhuntMode(),
+                data.pendingSyncedInventory != null ? data.pendingSyncedInventory : s.isSyncedInventory()));
     }
 
     /**
@@ -139,5 +168,12 @@ public final class SettingsPersistence {
         Boolean sharedJumping;
         Boolean manhuntMode;
         Boolean syncedInventory;
+        Boolean pending;
+        String pendingDifficulty;
+        Boolean pendingHalfHeartMode;
+        Boolean pendingSharedPotions;
+        Boolean pendingSharedJumping;
+        Boolean pendingManhuntMode;
+        Boolean pendingSyncedInventory;
     }
 }
